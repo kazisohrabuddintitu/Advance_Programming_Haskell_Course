@@ -17,7 +17,7 @@ import Text.Megaparsec
     some,
     try,
   )
-import Text.Megaparsec.Char (space, char)
+import Text.Megaparsec.Char (space)
 
 type Parser = Parsec Void String
 
@@ -63,18 +63,10 @@ lBool =
       const False <$> lKeyword "false"
     ]
 
-lNegativeInteger :: Parser Integer
-lNegativeInteger =
-  lexeme $ do
-    _ <- char '-'  -- Expect a minus sign
-    n <- some (satisfy isDigit)
-    pure $ -(read n)
-
 pAtom :: Parser Exp
 pAtom =
   choice
     [ CstInt <$> lInteger,
-      CstInt <$> lNegativeInteger,  -- Add negative integers
       CstBool <$> lBool,
       Var <$> lVName,
       lString "(" *> pExp <* lString ")"
@@ -174,3 +166,5 @@ parseAPL :: FilePath -> String -> Either String Exp
 parseAPL fname s = case parse (space *> pExp <* eof) fname s of
   Left err -> Left $ errorBundlePretty err
   Right x -> Right x
+
+

@@ -1,30 +1,35 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Redundant bracket" #-}
+{-# HLINT ignore "Evaluate" #-}
 module APL.Tests
   ( properties
   )
 where
 
-import APL.AST (Exp (..), subExp, VName, printExp)
+import APL.AST (Exp (..), subExp, VName)
 import APL.Error (isVariableError, isDomainError, isTypeError)
 import APL.Check (checkExp)
 import APL.Parser (parseAPL)
+import APL.Eval
 import Test.QuickCheck
   ( Property
   , Gen
   , Arbitrary (arbitrary, shrink)
   , property
   , cover
-  , oneof
   , checkCoverage
   , sized
   , elements
   , frequency
+  , suchThat
+  , vectorOf
+  , chooseInt
   )
 
+
 instance Arbitrary Exp where
-  arbitrary = sized (\n -> genExp n [])
-  
+  arbitrary = sized (genExp [] ) 
+
   shrink (Add e1 e2) = e1 : e2 : [Add e1' e2 | e1' <- shrink e1] ++ [Add e1 e2' | e2' <- shrink e2]
   shrink (Sub e1 e2) = e1 : e2 : [Sub e1' e2 | e1' <- shrink e1] ++ [Sub e1 e2' | e2' <- shrink e2]
   shrink (Mul e1 e2) = e1 : e2 : [Mul e1' e2 | e1' <- shrink e1] ++ [Mul e1 e2' | e2' <- shrink e2]
@@ -38,108 +43,94 @@ instance Arbitrary Exp where
   shrink (TryCatch e1 e2) = e1 : e2 : [TryCatch e1' e2 | e1' <- shrink e1] ++ [TryCatch e1 e2' | e2' <- shrink e2]
   shrink _ = []
 
--- -- Enhanced variable generation logic
--- genVar :: Gen VName
--- genVar = listOf1 (elements ['a'..'z']) >>= \name -> return name
 
-genExp :: Int -> [VName] -> Gen Exp
-genExp 0 _ = frequency
-  [ (10, CstInt <$> arbitrary)  -- 10%
-  , (10, CstBool <$> arbitrary) -- 10%
-  ]
-
-genExp size vars = frequency
-  [ (10, CstInt <$> arbitrary)  -- 10%
-  , (10, CstBool <$> arbitrary) -- 10%
-
-  -- Operations that do not cause errors
-  , (10, Add <$> genExp halfSize vars <*> genExp halfSize vars)   -- 10%
-  , (10, Sub <$> genExp halfSize vars <*> genExp halfSize vars)   -- 10%
-  , (10, Mul <$> genExp halfSize vars <*> genExp halfSize vars)   -- 10%
-
-  -- Domain error cases
-  , (20, Div <$> genExp halfSize vars <*> pure (CstInt 0))          -- 20% (div by zero)
-  , (20, Pow <$> genExp halfSize vars <*> pure (CstInt (-1)))      -- 20% (negative exponent)
-
-  -- Additional domain error scenarios
-  , (10, Div <$> genExp halfSize vars <*> oneof [pure (CstInt 0), genExp halfSize vars]) -- 10%
-  , (5, Pow <$> genExp halfSize vars <*> genExp halfSize vars)     -- 5%
-
-  -- Equal and control structures
-  , (10, Eql <$> genExp halfSize vars <*> genExp halfSize vars)     -- 10%
-  , (20, If <$> genExp (size `div` 3) vars <*> genExp (size `div` 3) vars <*> genExp (size `div` 3) vars) -- 20%
-
-  -- Increased frequency for Apply and TryCatch to enhance coverage
-  , (20, Apply <$> genExp halfSize vars <*> genExp halfSize vars) -- 20%
-  , (20, TryCatch <$> genExp halfSize vars <*> genExp halfSize vars) -- 20%
-
-  -- Reduced variable cases to lower variable errors
-  , (5, Var <$> elements (if null vars then ["x", "y", "z", "ab", "bc"] else vars))   -- 5%
-  , (5, Let <$> elements (if null vars then ["x", "y", "z", "ab", "bc"] else vars) <*> genExp halfSize vars <*> genExp halfSize vars) -- 5%
-  , (5, Lambda <$> elements (if null vars then ["x", "y", "z", "ab", "bc"] else vars) <*> genExp (size - 1) vars) -- 5%
-
-  -- More varied variable names to increase non-trivial variable coverage
-  , (10, Var <$> elements (if null vars then ["ab", "bc", "cd", "xyz", "def"] else vars))  -- 10%
-  ]
-  where
-    halfSize = size `div` 2
+genVar :: Int ->  Gen VName
+genVar i = do
+    alpha <- elements ['a' .. 'z']
+    x <- chooseInt (0, i)
+    y <- chooseInt (0,4-1-x)
+    alphas <- vectorOf x (elements ['a' .. 'z'])
+    nums <- vectorOf y (elements  ['0' .. '9'])
+    pure ([alpha] ++ alphas ++ nums)
 
 
--- genExp size vars = frequency
---   [ (10, CstInt <$> arbitrary)
---   , (10, CstBool <$> arbitrary)
---   , (15, Add <$> genExp halfSize vars <*> genExp halfSize vars)   -- 15%
---   , (15, Sub <$> genExp halfSize vars <*> genExp halfSize vars)   -- 15%
---   , (15, Mul <$> genExp halfSize vars <*> genExp halfSize vars)   -- 15%
---   , (25, Div <$> genExp halfSize vars <*> pure (CstInt 0))          -- 25% (div by zero)
---   , (25, Pow <$> genExp halfSize vars <*> pure (CstInt (-1)))
---   , (20, Div <$> genExp halfSize vars <*> oneof [pure (CstInt 0), genExp halfSize vars]) -- 20%
---   , (20, Pow <$> genExp halfSize vars <*> genExp halfSize vars)
---   , (10, Eql <$> genExp halfSize vars <*> genExp halfSize vars)     -- 10%
---   , (15, If <$> genExp (size `div` 3) vars <*> genExp (size `div` 3) vars <*> genExp (size `div` 3) vars) -- 15%
---   , (5, Var <$> elements (if null vars then ["x", "y", "z", "ab", "bc"] else vars))   -- 5%
---   , (5, Let <$> elements (if null vars then ["x", "y", "z", "ab", "bc"] else vars) <*> genExp halfSize vars <*> genExp halfSize vars) -- 5%
---   , (5, Lambda <$> elements (if null vars then ["x", "y", "z", "ab", "bc"] else vars) <*> genExp (size - 1) vars) -- 5%
---   , (20, Apply <$> genExp halfSize vars <*> genExp halfSize vars) -- 20%
---   , (20, TryCatch <$> genExp halfSize vars <*> genExp halfSize vars) -- 20%
---   , (10, Var <$> elements (if null vars then ["ab", "bc", "cd", "xyz", "def"] else vars))  -- 10%
---   ]
---   where
---     halfSize = size `div` 2
+genVar' :: [VName] ->  Gen VName
+genVar' s = do
+  case s of
+    [] -> genVar 3
+    _ ->  elements s
+
+
+genPos :: Gen Integer
+genPos = abs `fmap` (arbitrary :: Gen Integer) `suchThat` (> 0)
+
+genLam :: [VName]->Int -> Gen Exp
+genLam s size = do
+  let vngen = genVar 2
+  vname <- vngen
+  Lambda vname <$> genExp (vname :s) (size - 1)
+
+
+genExp :: [VName]->Int -> Gen Exp
+genExp _ 0 = frequency [(6,CstInt <$> genPos), (2,CstBool <$> arbitrary)]
+genExp s size =
+  frequency $
+    [ (80,CstInt <$> genPos)
+    , (40,CstBool <$> arbitrary)
+    , (30, Add <$> genExp s halfSize <*> genExp s halfSize)
+    , (30,Sub <$> genExp s halfSize <*> genExp s halfSize)
+    , (30,Mul <$> genExp s halfSize <*> genExp s halfSize)
+    , (30,Div <$> genExp s halfSize <*> genExp s halfSize)
+    , (30,Pow <$> genExp s halfSize <*> genExp s halfSize)
+    , (30,Eql <$> genExp s halfSize <*> genExp s halfSize)
+    , (30,If <$> genExp s thirdSize <*> genExp s thirdSize <*> genExp s thirdSize)
+    , (5,Var <$> genVar 100)
+    , (400, do
+      let vngen = genVar 2
+      vname <- vngen
+      (Let vname <$> genExp s halfSize) <*> genExp (vname:s) halfSize)
+    , (30,genLam s size)
+    , (30, Apply <$> genLam s halfSize <*> genExp s halfSize)
+    , (30,TryCatch <$> genExp s halfSize <*> genExp s halfSize)
+    ] ++ case s of
+      [] -> []
+      _ -> [(60, Var <$> genVar' s)]
+    where
+    (halfSize, thirdSize) = (size `div` 2,size `div` 3)
+
+
+
 
 expCoverage :: Exp -> Property
-expCoverage e = 
-    let errors = checkExp [] e 
-    in checkCoverage
-        . cover 20 (any isDomainError errors) "domain error"
-        . cover 20 (not $ any isDomainError errors) "no domain error"
-        . cover 20 (any isTypeError errors) "type error"
-        . cover 20 (not $ any isTypeError errors) "no type error"
-        . cover 5 (any isVariableError errors) "variable error"
-        . cover 70 (not $ any isVariableError errors) "no variable error"
-        . cover 50 (any isVarInRange (subExp e)) "non-trivial variable"
-        $ ()
-  where
-    isVarInRange (Var v) = length v >= 2 && length v <= 4
-    isVarInRange _        = False
+expCoverage e = checkCoverage
+  . cover 20 (any isDomainError (checkExp e)) "domain error"
+  . cover 20 (not $ any isDomainError (checkExp e)) "no domain error"
+  . cover 20 (any isTypeError (checkExp e)) "type error"
+  . cover 20 (not $ any isTypeError (checkExp e)) "no type error"
+  . cover 5 (any isVariableError (checkExp e)) "variable error"
+  . cover 70 (not $ any isVariableError (checkExp e)) "no variable error"
+  . cover 50 (or [2 <= n && n <= 4 | Var v <- subExp e, let n = length v]) "non-trivial variable"
+  $ ()
+
 
 parsePrinted :: Exp -> Bool
 parsePrinted e =
-    case parseAPL "" (printExp e) of
-        Left _ -> False
-        Right e' -> e == e'
-
+  case parseAPL "input" (show e) of
+    Left _ -> False
+    Right e' -> e == e'
 
 onlyCheckedErrors :: Exp -> Bool
 onlyCheckedErrors e =
-    let errors = checkExp [] e
-    in all isCheckedError errors
-  where
-    isCheckedError err = isDomainError err || isTypeError err || isVariableError err
+  let checkedErrors = checkExp e
+  in case runEval $ eval e of
+    Left err -> err `elem` checkedErrors
+    Right _ -> True
+
 
 properties :: [(String, Property)]
 properties =
   [ ("expCoverage", property expCoverage)
-  , ("parsePrinted", property parsePrinted)
   , ("onlyCheckedErrors", property onlyCheckedErrors)
+  , ("parsePrinted", property parsePrinted)
   ]
+

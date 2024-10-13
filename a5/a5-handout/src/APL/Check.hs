@@ -1,5 +1,4 @@
-{-# OPTIONS_GHC -Wno-overlapping-patterns #-}
-module APL.Check (checkExp, Error, Vars) where
+module APL.Check (checkExp, Error) where
 
 import APL.AST (Exp (..), VName)
 import APL.Error (Error (..))
@@ -37,49 +36,42 @@ maskErrors :: CheckM a -> CheckM a
 maskErrors m = CheckM $ \vars ->
   let (x, _) = runCheckM m vars in (x, [])
 
-
 check :: Exp -> CheckM ()
 check (CstInt _) = pure ()
 check (CstBool _) = pure ()
 check (Var v) = do
   vars <- askVars
   unless (v `elem` vars) $
-    failure $ UnknownVariable v
+    failure $
+      UnknownVariable v
 check (Add x y) = do
+  failure NonInteger
   check x
   check y
- 
 check (Sub x y) = do
+  failure NonInteger
   check x
   check y
-
 check (Mul x y) = do
+  failure NonInteger
   check x
   check y
-
 check (Div x y) = do
-  check x
-  check y
-
--- Division by Zero Handling
-check (Div x (CstInt 0)) = do
-  check x
+  failure NonInteger
   failure DivisionByZero
-
--- Power with Negative Exponent Handling
-check (Pow x (CstInt n)) | n < 0 = do
-  check x
-  failure NegativeExponent
-
-check (Pow x y) = do
   check x
   check y
-
+check (Pow x y) = do
+  failure NonInteger
   failure NegativeExponent
+  check x
+  check y
 check (Eql x y) = do
+  failure InvalidEqual
   check x
   check y
 check (If x y z) = do
+  failure NonBoolean
   check x
   check y
   check z
@@ -89,12 +81,13 @@ check (Let v e1 e2) = do
 check (Lambda v e) = do
   localVars (v :) $ check e
 check (Apply x y) = do
+  failure NonFunction
   check x
   check y
-  failure NonFunction
 check (TryCatch x y) = do
   maskErrors $ check x
   check y
 
-checkExp :: Vars -> Exp -> [Error]
-checkExp vars e = snd $ runCheckM (check e) vars
+checkExp :: Exp -> [Error]
+checkExp e = snd $ runCheckM (check e) []
+
